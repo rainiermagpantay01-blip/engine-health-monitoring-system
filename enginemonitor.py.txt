@@ -1,0 +1,744 @@
+"""
+PEHMS — Professional Engine Health Monitoring System
+"""
+
+import streamlit as st
+import pandas as pd
+import numpy as np
+import json
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from datetime import datetime, timedelta
+import warnings
+
+warnings.filterwarnings('ignore')
+
+# ---------------------------
+# Problem definitions
+# ---------------------------
+PROBLEM_WEIGHTS = {
+    "Overheating": 3,
+    "Engine imbalance": 1,
+    "Low oil pressure": 2,
+    "High oil pressure": 2,
+    "Cold engine": 1,
+    "No problem": 0
+}
+
+PROBLEM_LIST = ["Overheating", "Engine imbalance", "Low oil pressure", "High oil pressure", "Cold engine"]
+
+# ---------------------------
+# Buffer settings for hysteresis
+# ---------------------------
+VIBRATION_BUFFER = 1
+PRESSURE_BUFFER = 3
+
+
+# ---------------------------
+# Smart Rule-Based Engine Monitor (No ML)
+# ---------------------------
+class SmartEngineMonitor:
+    def __init__(self):
+        self.normal_ranges = {
+            "temperature": (75, 95),
+            "vibration": (8, 12),
+            "oil_pressure": (45, 55)
+        }
+
+    def detect_current_problems(self, current_reading):
+        """Rule-based problem detection"""
+        problems = []
+        temp, vib, pressure = current_reading["temperature"], current_reading["vibration"], current_reading["oil_pressure"]
+
+        # Temperature problems - NO BUFFER
+        if temp > self.normal_ranges["temperature"][1]:  # Over 95°C = Overheating
+            problems.append("Overheating")
+        elif temp < self.normal_ranges["temperature"][0]:  # Under 75°C = Cold engine
+            problems.append("Cold engine")
+
+        # Vibration problems - with buffer
+        if vib > self.normal_ranges["vibration"][1] + VIBRATION_BUFFER:
+            problems.append("Engine imbalance")
+
+        # Pressure problems - with buffer
+        if pressure < self.normal_ranges["oil_pressure"][0] - PRESSURE_BUFFER:
+            problems.append("Low oil pressure")
+        elif pressure > self.normal_ranges["oil_pressure"][1] + PRESSURE_BUFFER:
+            problems.append("High oil pressure")
+
+        return problems if problems else ["No problem"]
+
+    def calculate_probabilities(self, current_reading, history):
+        """Simulate probabilities using rules and trends (no ML)"""
+        problems = self.detect_current_problems(current_reading)
+        probabilities = {}
+
+        for problem in PROBLEM_LIST:
+            if problem in problems:
+                # Higher probability for detected problems
+                probabilities[problem] = 0.85
+            else:
+                # Base probability with trend influence
+                base_prob = 0.05
+
+                # Add trend-based probability boosts
+                if len(history) >= 3:
+                    if problem == "Overheating" and self._is_trending_up(history, "temperature", 0.5):
+                        base_prob = 0.35
+                    elif problem == "Engine imbalance" and self._is_trending_up(history, "vibration", 0.3):
+                        base_prob = 0.30
+                    elif problem == "Low oil pressure" and self._is_trending_down(history, "oil_pressure", 0.4):
+                        base_prob = 0.25
+
+                probabilities[problem] = round(base_prob, 3)
+
+        return probabilities
+
+    def _is_trending_up(self, history, parameter, threshold):
+        """Check if parameter is trending upward"""
+        if len(history) < 3:
+            return False
+        recent = history[parameter].tail(3)
+        return (recent.diff().mean() > threshold)
+
+    def _is_trending_down(self, history, parameter, threshold):
+        """Check if parameter is trending downward"""
+        if len(history) < 3:
+            return False
+        recent = history[parameter].tail(3)
+        return (recent.diff().mean() < -threshold)
+
+    def generate_predictive_insights(self, current_reading, history):
+        """Generate smart insights using trends and rules (no ML)"""
+        insights = []
+
+        if history.empty or len(history) < 3:
+            # Not enough data for trend analysis - give basic problem detection only
+            current_problems = self.detect_current_problems(current_reading)
+
+            if "Overheating" in current_problems:
+                insights.append("🔥 **Overheating Pattern:** High temperatures detected - cooling system performance may be declining")
+            if "Engine imbalance" in current_problems:
+                insights.append("⚡ **Vibration Pattern:** Elevated vibration levels - mechanical components may be developing wear")
+            if "Low oil pressure" in current_problems:
+                insights.append("🛢️ **Pressure Pattern:** Low oil pressure readings - lubrication system efficiency may be reducing")
+            if "High oil pressure" in current_problems:
+                insights.append("🛢️ **Pressure Pattern:** High oil pressure detected - flow restrictions may be developing")
+            if "Cold engine" in current_problems:
+                insights.append("🧊 **Temperature Pattern:** Suboptimal temperatures - warm-up system performance may be affected")
+
+            return insights
+
+        current_problems = self.detect_current_problems(current_reading)
+        temp, vib, pressure = current_reading["temperature"], current_reading["vibration"], current_reading["oil_pressure"]
+
+        # Temperature insights
+        if len(history) >= 5:
+            temp_trend = self._calculate_trend(history, "temperature")
+
+            if "Overheating" in current_problems:
+                if temp_trend > 1.0:
+                    insights.append("🔥 **Accelerating Overheat:** Temperature rising rapidly +{:.1f}°C/reading - cooling system strain likely increasing".format(temp_trend))
+                elif temp_trend > 0.3:
+                    insights.append("🔥 **Progressive Overheat:** Temperature continues to climb - suggests ongoing cooling inefficiency")
+                elif abs(temp_trend) <= 0.3:
+                    insights.append("🔥 **Sustained Overheat:** High temperature maintained - cooling system performance may be degraded")
+                elif temp_trend < -0.3:
+                    insights.append("🔥 **Recovering Overheat:** Temperature decreasing but remains elevated - cooling system showing response")
+
+            if "Cold engine" in current_problems:
+                if temp_trend < -0.8:
+                    insights.append("🧊 **Rapid Cooling:** Temperature dropping quickly - thermostat performance may be declining")
+                elif temp_trend < -0.3:
+                    insights.append("🧊 **Progressive Cooling:** Engine cooling further - warm-up system efficiency may be reduced")
+                elif abs(temp_trend) <= 0.3:
+                    insights.append("🧊 **Stable Cold Operation:** Engine maintaining suboptimal temperature - warm-up characteristics may need evaluation")
+                elif temp_trend > 0.3:
+                    insights.append("🧊 **Gradual Warming:** Engine temperature increasing - warm-up process underway")
+
+        else:
+            if "Overheating" in current_problems:
+                insights.append("🔥 **Overheating Pattern:** High temperatures detected - cooling system performance may be declining")
+            if "Cold engine" in current_problems:
+                insights.append("🧊 **Temperature Pattern:** Suboptimal temperatures - warm-up system performance may be affected")
+
+        # Vibration insights
+        if len(history) >= 4:
+            vib_trend = self._calculate_trend(history, "vibration")
+
+            if "Engine imbalance" in current_problems:
+                if vib_trend > 0.3:
+                    insights.append("⚡ **Worsening Imbalance:** Vibration increasing rapidly +{:.1f}Hz/reading - mechanical wear may be accelerating".format(vib_trend))
+                elif vib_trend > 0.1:
+                    insights.append("⚡ **Progressive Imbalance:** Vibration levels continuing to rise - suggests developing mechanical issues")
+                elif abs(vib_trend) <= 0.1:
+                    insights.append("⚡ **Stable Imbalance:** High vibration levels sustained - mechanical components under consistent stress")
+                elif vib_trend < -0.1:
+                    insights.append("⚡ **Improving Imbalance:** Vibration decreasing but remains elevated - mechanical condition may be stabilizing")
+            elif vib_trend > 0.3 and vib > self.normal_ranges["vibration"][1]:
+                insights.append("⚡ **Developing Vibration Pattern:** Levels increasing - potential imbalance beginning to form")
+            elif vib > self.normal_ranges["vibration"][1] - 2:
+                insights.append("📊 **Elevated Vibration:** Approaching warning levels - mechanical system showing early stress signs")
+
+        else:
+            if "Engine imbalance" in current_problems:
+                insights.append("⚡ **Vibration Pattern:** Elevated vibration levels - mechanical components may be developing wear")
+
+        # Oil pressure insights
+        expected_pressure = 50 - (temp - 85) * 0.2
+        pressure_deviation = abs(pressure - expected_pressure)
+
+        if "Low oil pressure" in current_problems:
+            if pressure < self.normal_ranges["oil_pressure"][0] - 10:
+                insights.append("🛢️ **Critical Pressure Loss:** Oil pressure critically low - lubrication system integrity may be compromised")
+            else:
+                insights.append("🛢️ **Low Oil Pressure Condition:** Pressure levels suboptimal - lubrication efficiency may be reduced")
+
+        if "High oil pressure" in current_problems:
+            if pressure > self.normal_ranges["oil_pressure"][1] + 15:
+                insights.append("🛢️ **Severe High Pressure:** Oil pressure excessively high - potential flow restrictions or pump issues developing")
+            else:
+                insights.append("🛢️ **High Oil Pressure Condition:** Pressure regulation showing anomalies - system performance may be affected")
+
+        # Pressure-temperature relationship insights (valid physics - oil viscosity changes with temperature)
+        if pressure_deviation > 8 and "Low oil pressure" not in current_problems and "High oil pressure" not in current_problems:
+            insights.append("🛢️ **Pressure-Temperature Mismatch:** Unexpected pressure for current temperature - suggests potential early lubrication system changes")
+
+        # Multiple problem insights - only show for critical combinations
+        problem_count = len([p for p in current_problems if p != "No problem"])
+
+        if problem_count >= 2:
+            critical_problems = [p for p in current_problems if p in ["Overheating", "Low oil pressure"]]
+            if len(critical_problems) >= 2:
+                insights.append("🚨 **Critical Multi-System Strain:** Overheating combined with low oil pressure - thermal and lubrication systems both showing stress")
+
+        # Trend-based early warnings
+        if len(history) >= 5:
+            if "Overheating" not in current_problems and temp > self.normal_ranges["temperature"][1] - 2:
+                temp_trend = self._calculate_trend(history, "temperature")
+                if temp_trend > 0.5:
+                    insights.append("🔶 **Approaching Overheat Threshold:** Temperature nearing critical range and rising - cooling system may be approaching limits")
+
+            if "Engine imbalance" not in current_problems and vib > self.normal_ranges["vibration"][1] - 1:
+                vib_trend = self._calculate_trend(history, "vibration")
+                if vib_trend > 0.2:
+                    insights.append("🔶 **Developing Vibration Pattern:** Vibration approaching warning levels and increasing - mechanical system may be developing issues")
+
+            # Early oil pressure warnings
+            if "Low oil pressure" not in current_problems and pressure < self.normal_ranges["oil_pressure"][0] + 3:
+                pressure_trend = self._calculate_trend(history, "oil_pressure")
+                if pressure_trend < -0.5:
+                    insights.append("🔶 **Approaching Low Pressure:** Oil pressure declining toward lower limit - lubrication system may be developing issues")
+
+        # System stability assessment
+        if current_problems != ["No problem"] and len(history) >= 5:
+            stable_problems = []
+            if "Overheating" in current_problems and abs(self._calculate_trend(history, "temperature")) <= 0.3:
+                stable_problems.append("overheating")
+            if "Engine imbalance" in current_problems and abs(self._calculate_trend(history, "vibration")) <= 0.2:
+                stable_problems.append("vibration")
+            if "Low oil pressure" in current_problems and abs(self._calculate_trend(history, "oil_pressure")) <= 1.0:
+                stable_problems.append("low oil pressure")
+            if "High oil pressure" in current_problems and abs(self._calculate_trend(history, "oil_pressure")) <= 1.0:
+                stable_problems.append("high oil pressure")
+            if "Cold engine" in current_problems and abs(self._calculate_trend(history, "temperature")) <= 0.3:
+                stable_problems.append("cold operation")
+
+            if stable_problems:
+                insights.append("🔄 **Stable Operating Pattern:** {} maintaining consistent levels - system behavior appears predictable".format(", ".join(stable_problems)))
+
+        # General system health summary
+        if not insights and current_problems != ["No problem"]:
+            if any(p in current_problems for p in ["Overheating", "Low oil pressure"]):
+                insights.append("🎯 **Critical Performance Indicators:** Multiple parameters suggest significant system performance changes")
+            else:
+                insights.append("🔍 **System Performance Changes:** Early indicators show operational pattern adjustments")
+
+        # Limit insights to most important ones
+        if len(insights) > 5:
+            critical_keywords = ["Critical", "Worsening", "Severe", "Failure", "Accelerating", "Rapid"]
+            critical_insights = [i for i in insights if any(keyword in i for keyword in critical_keywords)]
+            other_insights = [i for i in insights if i not in critical_insights]
+
+            insights = critical_insights + other_insights[:5 - len(critical_insights)]
+
+        return insights
+
+    def _calculate_trend(self, history, parameter):
+        """Calculate simple linear trend"""
+        if len(history) < 3:
+            return 0
+        recent = history[parameter].tail(5)
+        x = np.arange(len(recent))
+        slope = np.polyfit(x, recent.values, 1)[0]
+        return slope
+
+    def generate_safety_warnings(self, current_reading):
+        """Generate safety warnings for out-of-range values"""
+        warnings = []
+        temp, vib, pressure = current_reading["temperature"], current_reading["vibration"], current_reading["oil_pressure"]
+        normal_ranges = self.normal_ranges
+
+        # Temperature warnings - NO BUFFER
+        if temp < normal_ranges["temperature"][0]:  # Under 75°C
+            warnings.append(f"Temperature below normal range - engine warm-up performance may be affected")
+        elif temp > normal_ranges["temperature"][1]:  # Over 95°C
+            warnings.append(f"Temperature above normal range - cooling system performance may be declining")
+        elif temp < normal_ranges["temperature"][0] + 2 or temp > normal_ranges["temperature"][1] - 2:
+            warnings.append(f"Temperature approaching range limits - thermal system may be operating near boundaries")
+
+        # Vibration warnings - with buffer
+        if vib > normal_ranges["vibration"][1] + VIBRATION_BUFFER:
+            warnings.append(f"Vibration significantly above normal range - mechanical components may be developing wear")
+        elif vib < normal_ranges["vibration"][0] or vib > normal_ranges["vibration"][1]:
+            warnings.append(f"Vibration slightly out of range - mechanical system may be showing early stress signs")
+
+        # Oil pressure warnings - with buffer
+        if pressure < normal_ranges["oil_pressure"][0] - PRESSURE_BUFFER:
+            warnings.append(f"Oil Pressure significantly below normal range - lubrication system efficiency may be reducing")
+        elif pressure > normal_ranges["oil_pressure"][1] + PRESSURE_BUFFER:
+            warnings.append(f"Oil Pressure significantly above normal range - flow restrictions may be developing")
+        elif pressure < normal_ranges["oil_pressure"][0] or pressure > normal_ranges["oil_pressure"][1]:
+            warnings.append(f"Oil Pressure slightly out of range - pressure regulation may be operating suboptimally")
+
+        return warnings
+
+
+# ---------------------------
+# Health Scoring (Rule-Based)
+# ---------------------------
+def calculate_engine_health_score(current_reading, history):
+    """Calculate health score using weighted deviation (User's Proposed Method)"""
+    if history.empty:
+        return 100
+
+    temp, vib, pressure = current_reading["temperature"], current_reading["vibration"], current_reading["oil_pressure"]
+
+    # 1. Calculate individual sensor scores (0-100) based on deviation from ideal
+    temp_ideal = 85
+    temp_range = 20
+    temp_score = max(0, 100 - (abs(temp - temp_ideal) / temp_range * 100))
+
+    vib_ideal = 10
+    vib_score = max(0, 100 - (max(0, vib - vib_ideal) / 10 * 100))
+
+    pressure_ideal = 50
+    pressure_range = 20
+    pressure_score = max(0, 100 - (abs(pressure - pressure_ideal) / pressure_range * 100))
+
+    # 2. Apply weighted average (Your weights: 40% temp, 30% vib, 30% pressure)
+    base_score = (temp_score * 0.4 + vib_score * 0.3 + pressure_score * 0.3)
+
+    # 3. Apply SMALL trend penalty only (removed the large fixed problem penalty)
+    trend_penalty = 0
+    if len(history) >= 5:
+        temp_trend = st.session_state.engine_monitor._calculate_trend(history, "temperature")
+        if abs(temp_trend) > 0.8:
+            trend_penalty = min(10, abs(temp_trend) * 5)  # Reduced from 15
+
+    final_score = max(0, base_score - trend_penalty)
+    return int(final_score)
+
+
+# ---------------------------
+# Visualization Functions
+# ---------------------------
+def draw_plotly_trends(df):
+    if df.empty:
+        return None
+    try:
+        normal_ranges = st.session_state.normal_ranges
+        df_plot = df.set_index("timestamp").tail(100)
+        fig = make_subplots(rows=3, cols=1, shared_xaxes=True,
+                            subplot_titles=("Temperature (°C)", "Vibration (Hz)", "Oil Pressure (psi)"))
+
+        # Temperature - BLUE line
+        fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["temperature"], mode="lines",
+                                 line=dict(color="blue", width=3)), row=1, col=1)
+
+        # Vibration - RED line
+        fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["vibration"], mode="lines",
+                                 line=dict(color="red", width=3)), row=2, col=1)
+
+        # Oil Pressure - GREEN line
+        fig.add_trace(go.Scatter(x=df_plot.index, y=df_plot["oil_pressure"], mode="lines",
+                                 line=dict(color="green", width=3)), row=3, col=1)
+
+        fig.update_layout(height=500, template="plotly_dark", showlegend=False)
+        return fig
+    except Exception as e:
+        print(f"Plotly error: {e}")
+        return None
+
+def create_health_gauge(score):
+    """Create a gauge chart for engine health"""
+    try:
+        fig = go.Figure(go.Indicator(
+            mode="gauge+number+delta",
+            value=score,
+            domain={'x': [0, 1], 'y': [0, 1]},
+            title={'text': "Engine Health Score", 'font': {'size': 20}},
+            delta={'reference': 90, 'increasing': {'color': "green"}, 'decreasing': {'color': "red"}},
+            gauge={
+                'axis': {'range': [None, 100], 'tickwidth': 1, 'tickcolor': "darkblue"},
+                'bar': {'color': "darkblue"},
+                'bgcolor': "white",
+                'borderwidth': 2,
+                'bordercolor': "gray",
+                'steps': [
+                    {'range': [0, 40], 'color': 'red'},
+                    {'range': [40, 60], 'color': 'orange'},
+                    {'range': [60, 75], 'color': 'yellow'},
+                    {'range': [75, 90], 'color': 'lightgreen'},
+                    {'range': [90, 100], 'color': 'green'}],
+                'threshold': {
+                    'line': {'color': "red", 'width': 4},
+                    'thickness': 0.75,
+                    'value': 90}}))
+
+        fig.update_layout(height=300, font={'color': "darkblue", 'family': "Arial"})
+        return fig
+    except:
+        return go.Figure()
+
+
+def get_health_status(score):
+    """Get health status based on score"""
+    if score >= 90:
+        return "Excellent", "🟢"
+    elif score >= 75:
+        return "Good", "🟡"
+    elif score >= 60:
+        return "Fair", "🟠"
+    elif score >= 40:
+        return "Poor", "🔴"
+    else:
+        return "Critical", "💀"
+
+
+# ---------------------------
+# Session State Setup
+# ---------------------------
+st.set_page_config(page_title="PEHMS - Engine Health Monitoring", layout="wide", page_icon="🚗")
+
+if "df_history" not in st.session_state:
+    st.session_state.df_history = pd.DataFrame(columns=[
+        "timestamp", "temperature", "vibration", "oil_pressure", "problem",
+        "probabilities_json", "severity", "warnings"
+    ])
+
+if "normal_ranges" not in st.session_state:
+    st.session_state.normal_ranges = {
+        "temperature": (75, 95),
+        "vibration": (8, 12),
+        "oil_pressure": (45, 55)
+    }
+
+if "engine_monitor" not in st.session_state:
+    st.session_state.engine_monitor = SmartEngineMonitor()
+
+if "ranges_changed" not in st.session_state:
+    st.session_state.ranges_changed = False
+
+# ---------------------------
+# Navigation and Pages
+# ---------------------------
+page_options = ["Engine Health", "Live Input", "Overview", "Settings"]
+page = st.sidebar.radio("Navigate", page_options)
+
+# Engine Health Page
+if page == "Engine Health":
+    st.header("🏥 Engine Health Dashboard")
+
+    if st.session_state.df_history.empty:
+        st.info("No sensor readings yet. Enter data in Live Input to see engine health status.")
+    else:
+        latest = st.session_state.df_history.iloc[-1]
+        current_reading = {
+            "temperature": latest["temperature"],
+            "vibration": latest["vibration"],
+            "oil_pressure": latest["oil_pressure"]
+        }
+
+        # Health scoring and display
+        health_score = calculate_engine_health_score(current_reading, st.session_state.df_history)
+        health_status, health_emoji = get_health_status(health_score)
+
+        # Main dashboard layout
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.subheader("Overall Engine Health")
+            gauge_fig = create_health_gauge(health_score)
+            st.plotly_chart(gauge_fig, use_container_width=True)
+        with col2:
+            st.subheader("Health Status")
+            st.markdown(f"### {health_emoji} {health_status}")
+            st.metric("Health Score", f"{health_score}/100")
+
+            # Quick stats
+            st.subheader("Quick Stats")
+            st.metric("Temperature", f"{latest['temperature']}°C")
+            st.metric("Vibration", f"{latest['vibration']} Hz")
+            st.metric("Oil Pressure", f"{latest['oil_pressure']} psi")
+
+            # Problems
+            st.subheader("Performance Indicators")
+            if latest['problem'] != "No problem":
+                st.error(f"**System Patterns:** {latest['problem']}")
+            else:
+                st.success("**No performance issues detected**")
+
+        # Predictive Insights
+        if len(st.session_state.df_history) >= 3:
+            st.subheader("🔮 Predictive Insights")
+
+            insights = st.session_state.engine_monitor.generate_predictive_insights(
+                current_reading, st.session_state.df_history
+            )
+
+            if insights:
+                for insight in insights:
+                    st.info(insight)
+            else:
+                st.success("✅ No emerging issues detected - engine operating within expected patterns")
+
+        # Detailed health breakdown
+        st.subheader("📊 Detailed Health Analysis")
+        col1, col2, col3 = st.columns(3)
+
+        with col1:
+            temp = latest['temperature']
+            normal_ranges = st.session_state.normal_ranges
+            if temp < normal_ranges["temperature"][0]:  # Under 75°C
+                temp_status = "🟦 Cold"
+            elif temp > normal_ranges["temperature"][1]:  # Over 95°C
+                temp_status = "🔴 Hot"
+            else:
+                temp_status = "✅ Normal"
+            st.metric("Temperature Status", temp_status)
+            temp_progress = max(0, min(1.0, (100 - (abs(temp - 85) / 20 * 100)) / 100))
+            st.progress(temp_progress, text=f"{temp}°C")
+
+        with col2:
+            vib = latest['vibration']
+            vib_status = "✅ Normal" if st.session_state.normal_ranges["vibration"][0] <= vib <= st.session_state.normal_ranges["vibration"][1] else "⚠️ Warning"
+            st.metric("Vibration Status", vib_status)
+            vib_progress = max(0, min(1.0, (100 - (max(0, vib - 10) / 10 * 100)) / 100))
+            st.progress(vib_progress, text=f"{vib} Hz")
+
+        with col3:
+            pressure = latest['oil_pressure']
+            pressure_status = "✅ Normal" if st.session_state.normal_ranges["oil_pressure"][0] <= pressure <= st.session_state.normal_ranges["oil_pressure"][1] else "⚠️ Warning"
+            st.metric("Oil Pressure Status", pressure_status)
+            pressure_progress = max(0, min(1.0, (100 - (abs(pressure - 50) / 20 * 100)) / 100))
+            st.progress(pressure_progress, text=f"{pressure} psi")
+
+        # Recommendations
+        st.subheader("💡 Health Recommendations")
+        if "Cold engine" in latest['problem']:
+            st.info("""
+            **🧊 Cold Engine Condition:**
+            - Engine operating below optimal temperature range
+            - Warm-up characteristics may need evaluation
+            - Thermostat performance could be assessed
+            - Consider environmental operating conditions
+            """)
+        elif health_score >= 90:
+            st.success("**Excellent Condition:** Engine operating within optimal performance parameters with no signs of performance degradation")
+        elif health_score >= 75:
+            st.info("**Good Condition:** System showing stable performance with minor variations within acceptable ranges")
+        elif health_score >= 60:
+            st.warning("**Fair Condition:** Some performance parameters showing deviations from optimal ranges - system may be developing early wear patterns")
+        elif health_score >= 40:
+            st.error("**Poor Condition:** Multiple systems indicating performance degradation - comprehensive evaluation may be beneficial")
+        else:
+            st.error("**Critical Condition:** Significant performance issues detected across multiple systems - system reliability may be affected")
+
+# Live Input Page
+if page == "Live Input":
+    st.header("🟢 Input Sensor Readings")
+    st.info("🔬 Smart Monitoring: Rule-Based Detection + Trend Analysis + Predictive Insights")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        temp_input = st.number_input("Temperature (°C)", 0.0, 250.0, 85.0, step=0.1)
+    with col2:
+        vib_input = st.number_input("Vibration (Hz)", 0.0, 200.0, 10.0, step=0.1)
+    with col3:
+        pressure_input = st.number_input("Oil Pressure (psi)", 0.0, 300.0, 50.0, step=0.1)
+
+    if st.button("Analyze Engine"):
+        current_reading = {
+            "temperature": temp_input,
+            "vibration": vib_input,
+            "oil_pressure": pressure_input
+        }
+
+        # Problem detection
+        problems = st.session_state.engine_monitor.detect_current_problems(current_reading)
+
+        # Simulated probabilities
+        probabilities = st.session_state.engine_monitor.calculate_probabilities(
+            current_reading, st.session_state.df_history
+        )
+
+        # Predictive insights
+        insights = st.session_state.engine_monitor.generate_predictive_insights(
+            current_reading, st.session_state.df_history
+        )
+
+        # Safety warnings
+        safety_warnings = st.session_state.engine_monitor.generate_safety_warnings(current_reading)
+
+        # Severity calculation
+        max_severity = max(PROBLEM_WEIGHTS.get(p, 0) for p in problems)
+        severity = "High" if max_severity >= 2 else "Medium" if max_severity >= 1 else "Low" if problems != ["No problem"] else "None"
+
+        # Display results
+        st.success(f"🔍 **Current Assessment:** {', '.join(problems)} (Severity: {severity})")
+
+        if insights:
+            st.subheader("🔮 Predictive Insights")
+            for insight in insights:
+                st.info(insight)
+        else:
+            st.success("✅ No emerging issues detected - engine operating within expected patterns")
+
+        # Show probabilities
+        st.subheader("Probability Scores")
+        prob_df = pd.DataFrame.from_dict(probabilities, orient='index', columns=['Probability']).round(3)
+        st.dataframe(prob_df)
+
+        # Show current normal ranges
+        st.subheader("📏 Current Normal Ranges")
+        normal_ranges = st.session_state.normal_ranges
+        ranges_df = pd.DataFrame({
+            'Parameter': ['Temperature', 'Vibration', 'Oil Pressure'],
+            'Normal Range': [
+                f"{normal_ranges['temperature'][0]}-{normal_ranges['temperature'][1]}°C",
+                f"{normal_ranges['vibration'][0]}-{normal_ranges['vibration'][1]} Hz",
+                f"{normal_ranges['oil_pressure'][0]}-{normal_ranges['oil_pressure'][1]} psi"
+            ]
+        })
+        st.table(ranges_df)
+
+        # === REPLACEMENT WARNING CHECK ===
+        if problems != ["No problem"]:
+            # Find which sensors caused the problems
+            if "Overheating" in problems or "Cold engine" in problems:
+                st.warning("⚠️ Temperature out of Range!")
+            if "Engine imbalance" in problems:
+                st.warning("⚠️ Vibration out of Range!")
+            if "Low oil pressure" in problems or "High oil pressure" in problems:
+                st.warning("⚠️ Oil Pressure out of Range!")
+
+        # Save to history
+        new_entry = pd.DataFrame([{
+            "timestamp": datetime.now(),
+            "temperature": temp_input,
+            "vibration": vib_input,
+            "oil_pressure": pressure_input,
+            "problem": ", ".join(problems),
+            "probabilities_json": json.dumps(probabilities),
+            "severity": severity,
+            "warnings": ", ".join(safety_warnings)
+        }])
+
+        st.session_state.df_history = pd.concat([st.session_state.df_history, new_entry], ignore_index=True)
+
+# Overview Page
+if page == "Overview":
+    st.header("🚗 Overview")
+
+    # Recent readings
+    df = st.session_state.df_history.sort_values("timestamp", ascending=False).head(10)
+    if not df.empty:
+        st.subheader("Recent Engine Readings")
+        df_display = df.copy()
+        df_display.index = range(1, len(df_display) + 1)
+        st.dataframe(df_display[["timestamp", "temperature", "vibration", "oil_pressure", "problem", "severity"]])
+    else:
+        st.info("No readings yet. Enter data in Live Input.")
+
+    # Sensor trends
+    st.subheader("Sensor Trends")
+    fig = draw_plotly_trends(st.session_state.df_history)
+    if fig:
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No trend data available yet.")
+
+    # Sensor statistics
+    st.subheader("📊 Sensor Statistics")
+    df = st.session_state.df_history.copy()
+    if not df.empty:
+        stats_df = pd.DataFrame({
+            "Sensor": ["Temperature (°C)", "Vibration (Hz)", "Oil Pressure (psi)"],
+            "Min": [df["temperature"].min(), df["vibration"].min(), df["oil_pressure"].min()],
+            "Max": [df["temperature"].max(), df["vibration"].max(), df["oil_pressure"].max()],
+            "Mean": [round(df["temperature"].mean(), 1), round(df["vibration"].mean(), 1), round(df["oil_pressure"].mean(), 1)],
+            "Std Dev": [round(df["temperature"].std(), 1), round(df["vibration"].std(), 1), round(df["oil_pressure"].std(), 1)]
+        })
+        st.table(stats_df)
+    else:
+        st.info("No statistics available yet.")
+
+# Settings Page
+if page == "Settings":
+    st.header("⚙️ Settings")
+
+    tab1, tab2 = st.tabs(["Basic Settings", "System Information"])
+
+    with tab1:
+        st.subheader("Normal Range Configuration")
+        current_ranges = st.session_state.normal_ranges
+
+        # Show current ranges
+        st.info("**Current Normal Ranges:**")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Temperature", f"{current_ranges['temperature'][0]}-{current_ranges['temperature'][1]}°C")
+        with col2:
+            st.metric("Vibration", f"{current_ranges['vibration'][0]}-{current_ranges['vibration'][1]} Hz")
+        with col3:
+            st.metric("Oil Pressure", f"{current_ranges['oil_pressure'][0]}-{current_ranges['oil_pressure'][1]} psi")
+
+        st.markdown("---")
+        st.subheader("Adjust Ranges")
+
+        t_slider = st.slider("Temperature Range (°C)", 50, 140, list(current_ranges["temperature"]), step=1)
+        v_slider = st.slider("Vibration Range (Hz)", 2, 40, list(current_ranges["vibration"]), step=1)
+        p_slider = st.slider("Oil Pressure Range (psi)", 20, 120, list(current_ranges["oil_pressure"]), step=1)
+
+        if st.button("Apply New Ranges"):
+            st.session_state.normal_ranges = {
+                "temperature": (t_slider[0], t_slider[1]),
+                "vibration": (v_slider[0], v_slider[1]),
+                "oil_pressure": (p_slider[0], p_slider[1])
+            }
+            st.session_state.engine_monitor.normal_ranges = st.session_state.normal_ranges
+            st.session_state.ranges_changed = True
+            st.success("✅ Normal ranges updated successfully!")
+            st.rerun()
+
+    with tab2:
+        st.subheader("System Tools")
+
+        st.warning("⚠️ **Data Management**")
+        if st.button("🗑️ Reset All History", type="secondary"):
+            st.session_state.df_history = pd.DataFrame(columns=[
+                "timestamp", "temperature", "vibration", "oil_pressure", "problem",
+                "probabilities_json", "severity", "warnings"
+            ])
+            st.success("All historical data has been reset!")
+            st.rerun()
+
+        st.info("💡 **Tip:** Use this to clear old data and start fresh for testing.")
+
+        st.markdown("---")
+        st.subheader("System Status")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            data_count = len(st.session_state.df_history)
+            st.metric("Data Points", data_count)
